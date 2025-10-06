@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "KafkaProducerTest": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
+        "KAFKA_TOPIC": "test-topic",
+        "KAFKA_GROUP_ID": "kafka-producer-test"
+      }
+    }
+  }
+}
