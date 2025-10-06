@@ -1,4 +1,6 @@
-﻿using KafkaObservableProj.Services;
+﻿using KafkaObservableProj.DTO;
+using KafkaObservableProj.Models;
+using KafkaObservableProj.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace KafkaObservableProj.Controllers
@@ -8,15 +10,13 @@ namespace KafkaObservableProj.Controllers
     public class StatsController : ControllerBase
     {
         private IEventObserver Observer { get; init; }
-        private ILogger<StatsController> Logger { get; init; }
 
-        public StatsController(IEventObserver observer, ILogger<StatsController> logger)
+        public StatsController(IEventObserver observer)
         {
             Observer = observer;
-            Logger = logger;
         }
 
-        // GET /stats  -> возвращает текущий snapshot (не сбрасывает счётчики)
+        // GET /stats
         [HttpGet]
         public ActionResult<IEnumerable<UserEventStat>> Get()
         {
@@ -24,21 +24,20 @@ namespace KafkaObservableProj.Controllers
             return Ok(snapshot);
         }
 
-        // GET /stats  -> возвращает текущий snapshot (не сбрасывает счётчики)
-        [HttpGet("{typeFilter}")]
+        // GET /stats/filter/typefilter  -> typefilter может быть ("click" и т.п.)
+        [HttpGet("/filter")]
         public ActionResult<IEnumerable<UserEventStat>> Get(string typeFilter)
         {
             var snapshot = Observer.GetSnapshot(typeFilter);
             return Ok(snapshot);
         }
 
-        // POST /stats/flush -> принудительно сбросить накопленные значения в хранилище
-        [HttpPost("flush")]
-        public async Task<IActionResult> Flush()
+        // GET /stats/timefilter -> 
+        [HttpGet("/timefilter")] ///{from:datetime},{to:datetime}
+        public ActionResult<IEnumerable<UserEvent>> Get(DateTime? from, DateTime? to)
         {
-            Logger.LogInformation("Manual flush requested");
-            await Observer.FlushAsync();
-            return Accepted();
+            var snapshot = Observer.GetSnapshot(from, to);
+            return Ok(snapshot);
         }
     }
 }

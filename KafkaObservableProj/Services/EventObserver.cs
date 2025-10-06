@@ -1,30 +1,36 @@
 ﻿using KafkaObservableProj.Data;
 using KafkaObservableProj.DTO;
+using KafkaObservableProj.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Reflection;
 
 namespace KafkaObservableProj.Services
 {
     public interface IEventObserver : IObserver<UserEvent>
     {
+        /// <summary>Получение статистики по полученным сообщениям</summary>
+        /// <returns></returns>
         public List<UserEventStat> GetSnapshot();
-        public List<UserEventStat> GetSnapshot(string typeFilter);
-        public Task FlushAsync();
-    }
 
-    public class UserEventStat
-    {
-        public int UserId { get; set; }
-        public string EventType { get; set; } = string.Empty;
-        public long Count { get; set; }
+        /// <summary>Получение статистики с фильтром по типу события</summary>
+        /// <param name="typeFilter">фильтр (click и т.п.)</param>
+        /// <returns></returns>
+        public List<UserEventStat> GetSnapshot(string typeFilter);
+
+        /// <summary>Получение всех сообщений, полученных в указанном временном диапазоне</summary>
+        /// <param name="from">Время от</param>
+        /// <param name="to">Время до</param>
+        /// <returns></returns>
+        public List<UserEvent> GetSnapshot(DateTime? from, DateTime? to);
     }
 
     public class EventObserver : IEventObserver, IDisposable
     {
         private IDataStorage Storage { get; init; }
         private ILogger<EventObserver> Logger { get; init; }
-        private ConcurrentDictionary<(int userId, string eventType), long> Counters { get; set; } = new();
-        //
+        private ConcurrentDictionary<(int userId, string eventType), long> Counters { get; set; } = [];
+        private List<UserEvent> Messages { get; set; } = [];
         private CancellationTokenSource Cts { get; set; } = new();
         private Task FlushTask { get; init; }
         private int FlushSeconds { get; init; }
@@ -35,8 +41,8 @@ namespace KafkaObservableProj.Services
             Storage = storage ?? throw new ArgumentNullException(nameof(storage));
             Logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-            FlushSeconds = int.TryParse(Environment.GetEnvironmentVariable("FLUSH_INTERVAL_SECONDS", EnvironmentVariableTarget.User), out var fs) && fs > 0 
-                            ? fs 
+            FlushSeconds = int.TryParse(Environment.GetEnvironmentVariable("FLUSH_INTERVAL_SECONDS", EnvironmentVariableTarget.User), out var fs) && fs > 0
+                            ? fs
                             : 10;
 
             FilterEventType = Environment.GetEnvironmentVariable("EVENT_FILTER_TYPE", EnvironmentVariableTarget.User);
@@ -52,7 +58,8 @@ namespace KafkaObservableProj.Services
                 return;
 
             var key = (value.UserId, value.EventType ?? string.Empty);
-            
+
+            Messages.Add(value);
             Counters.AddOrUpdate(key, 1, (_, existing) => existing + 1);
         }
 
@@ -96,7 +103,8 @@ namespace KafkaObservableProj.Services
             }
         }
 
-        // Возвращает текущий снимок счётчиков без их удаления
+        /// <summary>Возврат текущей статистики</summary>
+        /// <returns></returns>
         public List<UserEventStat> GetSnapshot()
         {
             var list = new List<UserEventStat>();
@@ -112,25 +120,32 @@ namespace KafkaObservableProj.Services
             return list;
         }
 
-        // Возвращает текущий снимок счётчиков без их удаления
+        /// <summary>Возврат текущей статистики по фильтру типа события</summary>
+        /// <param name="typeFilter">Фильтр типа события</param>
+        /// <returns></returns>
         public List<UserEventStat> GetSnapshot(string typeFilter)
         {
-            var list = new List<UserEventStat>();
-            foreach (var kv in Counters)
-            {
-                if (kv.Key.eventType != typeFilter) continue;
+            var result = Messages.Where(m => m.EventType == typeFilter)
+                                    .GroupBy(m => m.UserId)
+                                    .Select(g => new UserEventStat { UserId = g.Key, EventType = typeFilter, Count = g.Count() })
+                                    .ToList();
 
-                list.Add(new UserEventStat
-                {
-                    UserId = kv.Key.userId,
-                    EventType = kv.Key.eventType,
-                    Count = kv.Value
-                });
-            }
-            return list;
+            return result;
         }
 
-        // Внутренний drain — попытка забрать и удалить значения (как раньше)
+        /// <summary>Возврат коллекции сообщений, полученных во временном диапазоне</summary>
+        /// <param name="from">Начальное время</param>
+        /// <param name="to">Конечное время</param>
+        /// <returns></returns>
+        public List<UserEvent> GetSnapshot(DateTime? from, DateTime? to)
+        {
+            var result = Messages.Where(m => m.Timestamp >= (from ?? DateTime.MinValue) && m.Timestamp<= (to ?? DateTime.UtcNow))
+                                    .ToList();
+
+            return result;
+        }
+
+        
         private List<UserEventStat> DrainSnapshot()
         {
             var snapshot = new List<UserEventStat>();

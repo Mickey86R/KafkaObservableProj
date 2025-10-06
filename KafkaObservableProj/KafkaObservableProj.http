@@ -1,6 +1,6 @@
 @KafkaObservableProj_HostAddress = http://localhost:5258
 
-GET {{KafkaObservableProj_HostAddress}}/weatherforecast/
+GET {{KafkaObservableProj_HostAddress}}/stats/
 Accept: application/json
 
 ###

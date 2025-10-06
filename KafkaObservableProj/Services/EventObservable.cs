@@ -12,7 +12,7 @@ namespace KafkaObservableProj.Services
         public void PublishCompleted();
     }
 
-    public class EventObservable : IEventObservable//IObservable<UserEvent>
+    public class EventObservable : IEventObservable
     {
         private ConcurrentDictionary<IEventObserver, byte> Observers { get; init; } = new();
 
@@ -26,6 +26,7 @@ namespace KafkaObservableProj.Services
                 Observers.TryRemove(observer, out _);
             });
         }
+
         public IDisposable Subscribe(IObserver<UserEvent> observer)
         {
             if (observer == null) throw new ArgumentNullException(nameof(observer));
@@ -60,7 +61,5 @@ namespace KafkaObservableProj.Services
                 try { observer.OnCompleted(); } catch { }
             }
         }
-
     }
-
 }

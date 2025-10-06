@@ -34,7 +34,6 @@ namespace KafkaObservableProj.Services
                 BootstrapServers = Bootstrap,
                 GroupId = GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
-                //EnableAutoCommit = true
             };
 
             using var consumer = new ConsumerBuilder<Ignore, string>(conf).Build();
