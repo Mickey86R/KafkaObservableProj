@@ -4,9 +4,6 @@ using System.Text.Json;
 
 namespace KafkaObservableProj.Data
 {
-    public class DataStorage
-    {
-    }
     public interface IDataStorage
     {
         Task SaveAsync(IEnumerable<UserEventStat> stats);
@@ -16,7 +13,7 @@ namespace KafkaObservableProj.Data
     {
         public static IDataStorage Create(ILoggerFactory loggerFactory)
         {
-            var conn = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING");
+            var conn = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING", EnvironmentVariableTarget.User);
             if (!string.IsNullOrWhiteSpace(conn))
                 return new PostgresStorage(conn, loggerFactory.CreateLogger<PostgresStorage>());
 
@@ -43,7 +40,7 @@ namespace KafkaObservableProj.Data
 
             // ensure table
             var create = @"
-                            CREATE TABLE IF NOT EXISTS user_event_stats (
+                            CREATE TABLE IF NOT EXISTS ""KafkaTestSchema"".user_event_stats (
                             user_id INT NOT NULL,
                             event_type VARCHAR(50) NOT NULL,
                             count BIGINT NOT NULL,
@@ -58,15 +55,17 @@ namespace KafkaObservableProj.Data
                 foreach (var s in stats)
                 {
                     var sql = @"
-                                INSERT INTO user_event_stats (user_id, event_type, count)
+                                INSERT INTO ""KafkaTestSchema"".user_event_stats (user_id, event_type, count)
                                 VALUES (@u, @e, @c)
                                 ON CONFLICT (user_id, event_type)
                                 DO UPDATE SET count = user_event_stats.count + EXCLUDED.count;
                                 ";
+
                     await using var cmd = new NpgsqlCommand(sql, conn, tx);
                     cmd.Parameters.AddWithValue("u", s.UserId);
                     cmd.Parameters.AddWithValue("e", s.EventType);
                     cmd.Parameters.AddWithValue("c", s.Count);
+                    
                     await cmd.ExecuteNonQueryAsync();
                 }
 

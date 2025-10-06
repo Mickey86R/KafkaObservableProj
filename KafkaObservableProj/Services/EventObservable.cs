@@ -1,38 +1,53 @@
 ﻿using KafkaObservableProj.DTO;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Reactive.Disposables;
 
 namespace KafkaObservableProj.Services
 {
-    // Упрощённая реализация IObservable<UserEvent>
-    public class EventObservable : IObservable<UserEvent>
+    public interface IEventObservable : IObservable<UserEvent>
     {
-        private readonly ConcurrentDictionary<IObserver<UserEvent>, byte> _observers = new();
+        public void Publish(UserEvent userEvent);
 
+        public void PublishCompleted();
+    }
+
+    public class EventObservable : IEventObservable//IObservable<UserEvent>
+    {
+        private ConcurrentDictionary<IEventObserver, byte> Observers { get; init; } = new();
+
+        public IDisposable Subscribe(IEventObserver observer)
+        {
+            if (observer == null) throw new ArgumentNullException(nameof(observer));
+            Observers.TryAdd(observer, 0);
+
+            return Disposable.Create(() =>
+            {
+                Observers.TryRemove(observer, out _);
+            });
+        }
         public IDisposable Subscribe(IObserver<UserEvent> observer)
         {
             if (observer == null) throw new ArgumentNullException(nameof(observer));
-            _observers.TryAdd(observer, 0);
+            Observers.TryAdd(observer as IEventObserver, 0);
 
-            // Возвращаем готовый Disposable из System.Reactive,
-            // который при Dispose удалит наблюдателя из коллекции.
             return Disposable.Create(() =>
             {
-                _observers.TryRemove(observer, out _);
+                Observers.TryRemove(observer as IEventObserver, out _);
             });
         }
 
         public void Publish(UserEvent ev)
         {
-            foreach (var observer in _observers.Keys)
+            foreach (var observer in Observers.Keys)
             {
-                try { observer.OnNext(ev); } catch { /* подписчики обрабатывают ошибки сами */ }
+                try { observer.OnNext(ev); } catch { }
             }
         }
 
         public void PublishError(Exception ex)
         {
-            foreach (var observer in _observers.Keys)
+            foreach (var observer in Observers.Keys)
             {
                 try { observer.OnError(ex); } catch { }
             }
@@ -40,11 +55,12 @@ namespace KafkaObservableProj.Services
 
         public void PublishCompleted()
         {
-            foreach (var observer in _observers.Keys)
+            foreach (var observer in Observers.Keys)
             {
                 try { observer.OnCompleted(); } catch { }
             }
         }
+
     }
 
 }

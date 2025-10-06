@@ -2,88 +2,64 @@ using KafkaObservableProj.Data;
 using KafkaObservableProj.DTO;
 using KafkaObservableProj.Services;
 
-using var host = Host.CreateDefaultBuilder(args)
-    .ConfigureLogging(l =>
-    {
-        l.ClearProviders();
-        l.AddConsole();
-        l.SetMinimumLevel(LogLevel.Information);
-    })
-    .ConfigureServices((ctx, services) =>
-    {
-        services.AddSingleton<EventObservable>();
-        services.AddSingleton<IObservable<UserEvent>>(sp => sp.GetRequiredService<EventObservable>());
-
-        services.AddSingleton<IDataStorage>(sp => DataStorageFactory.Create(sp.GetRequiredService<ILoggerFactory>()));
-
-        var flushSeconds = 10;
-        if (int.TryParse(Environment.GetEnvironmentVariable("FLUSH_INTERVAL_SECONDS"), out var f) && f > 0)
-            flushSeconds = f;
-        var filter = Environment.GetEnvironmentVariable("EVENT_FILTER_TYPE");
-
-        services.AddSingleton<EventObserver>(sp =>
-            new EventObserver(sp.GetRequiredService<IDataStorage>(), sp.GetRequiredService<ILogger<EventObserver>>(), flushSeconds, filter));
-
-        services.AddSingleton<IObserver<UserEvent>>(sp => sp.GetRequiredService<EventObserver>());
-
-        services.AddHostedService<SubscriptionHostedService>();
-        services.AddHostedService<KafkaConsumer>();
-    })
-    .Build();
-
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
+// controllers
 builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+
+builder.Services.AddSingleton<IDataStorage>(sp => DataStorageFactory.Create(sp.GetRequiredService<ILoggerFactory>()));
+
+// DI registrations (singletons so controller and hosted services share same instances)
+builder.Services.AddSingleton<IEventObservable, EventObservable>();
+//builder.Services.AddSingleton<IObservable<UserEvent>>(sp => sp.GetRequiredService<EventObservable>());
+
+// DataStorage selection by env (POSTGRES_CONNECTION_STRING -> Postgres, else file)
+//builder.Services.AddSingleton<IDataStorage>(sp => DataStorageFactory.Create(sp.GetRequiredService<ILoggerFactory>()));
+
+// EventObserver registration (singleton)
 
 
-builder.Services.AddHostedService<KafkaConsumer>();
+//builder.Services.AddSingleton<EventObserver>(sp =>
+//    new EventObserver(sp.GetRequiredService<IDataStorage>(),
+//                      sp.GetRequiredService<ILogger<EventObserver>>()));
+builder.Services.AddSingleton<IEventObserver, EventObserver>();
+
+// Register as IObserver<UserEvent>
+//builder.Services.AddSingleton<IObserver<UserEvent>, >(sp => sp.GetRequiredService<EventObserver>());
+
+// Hosted services
+builder.Services.AddHostedService<SubscriptionHostedService>(); // subscribe observer to observable
+builder.Services.AddHostedService<KafkaConsumer>(); // kafka consumer background service
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
-
-app.UseHttpsRedirection();
-
-app.UseAuthorization();
-
 app.MapControllers();
+app.MapGet("/health", () => Results.Ok("ok"));
 
 app.Run();
 
 
+// Hosted service to subscribe observer to observable at startup
 internal class SubscriptionHostedService : IHostedService
 {
-    private readonly EventObservable _observable;
-    private readonly IObserver<UserEvent> _observer;
-    private IDisposable? _sub;
-    private readonly ILogger<SubscriptionHostedService> _logger;
+    private readonly IEventObservable _observable;
+    private readonly IEventObserver _observer;
 
-    public SubscriptionHostedService(EventObservable observable, IObserver<UserEvent> observer, ILogger<SubscriptionHostedService> logger)
+    public SubscriptionHostedService(IEventObservable observable, IEventObserver observer)
     {
         _observable = observable;
         _observer = observer;
-        _logger = logger;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Subscribing observer");
-        _sub = _observable.Subscribe(_observer);
+        _observable.Subscribe(_observer);
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Unsubscribing observer");
-        _sub?.Dispose();
-        return Task.CompletedTask;
-    }
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

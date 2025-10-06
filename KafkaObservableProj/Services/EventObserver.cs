@@ -1,56 +1,66 @@
 ﻿using KafkaObservableProj.Data;
 using KafkaObservableProj.DTO;
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 
 namespace KafkaObservableProj.Services
 {
+    public interface IEventObserver : IObserver<UserEvent>
+    {
+        public List<UserEventStat> GetSnapshot();
+        public List<UserEventStat> GetSnapshot(string typeFilter);
+        public Task FlushAsync();
+    }
+
     public class UserEventStat
     {
-        public int UserId { get; init; }
-        public string EventType { get; init; } = string.Empty;
+        public int UserId { get; set; }
+        public string EventType { get; set; } = string.Empty;
         public long Count { get; set; }
     }
 
-    // Простой observer: считает события и периодически флашит в IDataStorage
-    public class EventObserver : IObserver<UserEvent>, IDisposable
+    public class EventObserver : IEventObserver, IDisposable
     {
-        private readonly IDataStorage _storage;
-        private readonly ILogger<EventObserver> _logger;
-        private readonly ConcurrentDictionary<(int userId, string eventType), long> _counters = new();
-        private readonly CancellationTokenSource _cts = new();
-        private readonly Task _flushTask;
-        private readonly int _flushSeconds;
-        private readonly string? _filterEventType;
+        private IDataStorage Storage { get; init; }
+        private ILogger<EventObserver> Logger { get; init; }
+        private ConcurrentDictionary<(int userId, string eventType), long> Counters { get; set; } = new();
+        //
+        private CancellationTokenSource Cts { get; set; } = new();
+        private Task FlushTask { get; init; }
+        private int FlushSeconds { get; init; }
+        private string? FilterEventType { get; init; }
 
-        public EventObserver(IDataStorage storage, ILogger<EventObserver> logger, int flushSeconds = 10, string? filterEventType = null)
+        public EventObserver(IDataStorage storage, ILogger<EventObserver> logger)
         {
-            _storage = storage ?? throw new ArgumentNullException(nameof(storage));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _flushSeconds = Math.Max(1, flushSeconds);
-            _filterEventType = filterEventType;
-            _flushTask = Task.Run(() => FlushLoopAsync(_cts.Token));
+            Storage = storage ?? throw new ArgumentNullException(nameof(storage));
+            Logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+            FlushSeconds = int.TryParse(Environment.GetEnvironmentVariable("FLUSH_INTERVAL_SECONDS", EnvironmentVariableTarget.User), out var fs) && fs > 0 
+                            ? fs 
+                            : 10;
+
+            FilterEventType = Environment.GetEnvironmentVariable("EVENT_FILTER_TYPE", EnvironmentVariableTarget.User);
+
+            FlushTask = Task.Run(() => FlushLoopAsync(Cts.Token));
         }
 
         public void OnNext(UserEvent value)
         {
             if (value == null) return;
-            if (!string.IsNullOrEmpty(_filterEventType) &&
-                !string.Equals(value.EventType, _filterEventType, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(FilterEventType) &&
+                !string.Equals(value.EventType, FilterEventType, StringComparison.OrdinalIgnoreCase))
                 return;
 
             var key = (value.UserId, value.EventType ?? string.Empty);
-            _counters.AddOrUpdate(key, 1, (_, existing) => existing + 1);
+            
+            Counters.AddOrUpdate(key, 1, (_, existing) => existing + 1);
         }
 
-        public void OnError(Exception error)
-        {
-            _logger.LogError(error, "Observable error");
-        }
+        public void OnError(Exception error) => Logger.LogError(error, "Observable error");
 
         public void OnCompleted()
         {
-            _logger.LogInformation("Observable completed. Flushing.");
-            // синхронно флашим
+            Logger.LogInformation("Observable completed. Flushing.");
             FlushAsync().GetAwaiter().GetResult();
         }
 
@@ -60,25 +70,73 @@ namespace KafkaObservableProj.Services
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(_flushSeconds), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(FlushSeconds), ct);
                     await FlushAsync();
                 }
             }
             catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.LogError(ex, "Flush loop error"); }
+        }
+
+        // Публичный метод, который можно вызвать извне (например, из контроллера)
+        public async Task FlushAsync()
+        {
+            var snapshot = DrainSnapshot();
+
+            if (snapshot.Count == 0) return;
+
+            try
+            {
+                Logger.LogInformation("Flushing {Count} stats", snapshot.Count);
+                await Storage.SaveAsync(snapshot);
+            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Flush loop error");
+                Logger.LogError(ex, "Failed to save stats");
             }
         }
 
-        public async Task FlushAsync()
+        // Возвращает текущий снимок счётчиков без их удаления
+        public List<UserEventStat> GetSnapshot()
+        {
+            var list = new List<UserEventStat>();
+            foreach (var kv in Counters)
+            {
+                list.Add(new UserEventStat
+                {
+                    UserId = kv.Key.userId,
+                    EventType = kv.Key.eventType,
+                    Count = kv.Value
+                });
+            }
+            return list;
+        }
+
+        // Возвращает текущий снимок счётчиков без их удаления
+        public List<UserEventStat> GetSnapshot(string typeFilter)
+        {
+            var list = new List<UserEventStat>();
+            foreach (var kv in Counters)
+            {
+                if (kv.Key.eventType != typeFilter) continue;
+
+                list.Add(new UserEventStat
+                {
+                    UserId = kv.Key.userId,
+                    EventType = kv.Key.eventType,
+                    Count = kv.Value
+                });
+            }
+            return list;
+        }
+
+        // Внутренний drain — попытка забрать и удалить значения (как раньше)
+        private List<UserEventStat> DrainSnapshot()
         {
             var snapshot = new List<UserEventStat>();
-
-            foreach (var kv in _counters)
+            foreach (var kv in Counters)
             {
-                // Попытка удалить ключ и взять значение — best-effort
-                if (_counters.TryRemove(kv.Key, out var value))
+                if (Counters.TryRemove(kv.Key, out var value))
                 {
                     snapshot.Add(new UserEventStat
                     {
@@ -89,10 +147,9 @@ namespace KafkaObservableProj.Services
                 }
                 else
                 {
-                    // Если не удалось удалить (гонка), пробуем получить текущее значение и сбросить на 0
-                    if (_counters.TryGetValue(kv.Key, out var cur))
+                    if (Counters.TryGetValue(kv.Key, out var cur))
                     {
-                        if (_counters.TryUpdate(kv.Key, 0, cur))
+                        if (Counters.TryUpdate(kv.Key, 0, cur))
                         {
                             snapshot.Add(new UserEventStat
                             {
@@ -105,26 +162,17 @@ namespace KafkaObservableProj.Services
                 }
             }
 
-            if (snapshot.Count == 0) return;
-
-            try
-            {
-                _logger.LogInformation("Flushing {Count} stats", snapshot.Count);
-                await _storage.SaveAsync(snapshot);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to save stats");
-                // При ошибке можно: повторять, сохранять локально и т.д. — не реализовано (упрощённо)
-            }
+            return snapshot;
         }
 
         public void Dispose()
         {
-            _cts.Cancel();
-            try { _flushTask.Wait(TimeSpan.FromSeconds(5)); } catch { }
+            Cts.Cancel();
+
+            try { FlushTask.Wait(TimeSpan.FromSeconds(5)); } catch { }
+
             FlushAsync().GetAwaiter().GetResult();
-            _cts.Dispose();
+            Cts.Dispose();
         }
     }
 }
